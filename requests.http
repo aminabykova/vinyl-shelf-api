@@ -1,0 +1,90 @@
+# Запросы к Vinyl Shelf API для VS Code (расширение REST Client) и JetBrains (HTTP Client).
+# Сервер: uvicorn app.main:app --port 8080
+# Идентификаторы в примерах (1, 2...) верны для чистого сервера: выполните сначала сброс.
+
+@host = http://localhost:8080
+@api = {{host}}/api/v1
+@seller = Bearer user-1
+@subscriber = Bearer user-2
+
+### 0. Сброс данных заглушки
+POST {{host}}/debug/reset
+
+### 1. Поиск релизов по штрихкоду (два релиза)
+GET {{api}}/catalog/lookup?barcode=0602537284332
+Authorization: {{seller}}
+
+### 1a. Штрихкод не найден (404)
+GET {{api}}/catalog/lookup?barcode=1111111111111
+Authorization: {{seller}}
+
+### 1b. Некорректный штрихкод (400)
+GET {{api}}/catalog/lookup?barcode=123
+Authorization: {{seller}}
+
+### 1c. Внешняя база недоступна (503)
+GET {{api}}/catalog/lookup?barcode=0000000000000
+Authorization: {{seller}}
+
+### 1d. Без токена (401)
+GET {{api}}/catalog/lookup?barcode=0602537284332
+
+### 2. Подписчик добавляет релиз 1001 в Wantlist
+POST {{api}}/collection/wantlist
+Authorization: {{subscriber}}
+Content-Type: application/json
+
+{ "releaseId": 1001, "notify": true }
+
+### 3. Продавец создаёт черновик карточки (id = 1)
+POST {{api}}/collection/items
+Authorization: {{seller}}
+Content-Type: application/json
+
+{ "releaseId": 1001 }
+
+### 4. Продавец дополняет и подтверждает карточку (DRAFT -> IN_COLLECTION)
+PATCH {{api}}/collection/items/1
+Authorization: {{seller}}
+Content-Type: application/json
+
+{ "mediaCondition": "NM", "sleeveCondition": "VG+", "note": "Первый пресс", "confirm": true }
+
+### 5. Продавец выставляет экземпляр на продажу (id лота = 1)
+POST {{api}}/marketplace/listings
+Authorization: {{seller}}
+Content-Type: application/json
+
+{ "collectionItemId": 1, "price": 4500, "currency": "RUB" }
+
+### 5a. Уведомления, "отправленные" подписчику (служебный эндпоинт)
+GET {{host}}/debug/notifications
+
+### 5b. Повторная попытка выставить тот же экземпляр (409)
+POST {{api}}/marketplace/listings
+Authorization: {{seller}}
+Content-Type: application/json
+
+{ "collectionItemId": 1, "price": 4500, "currency": "RUB" }
+
+### 6. Ревью на релиз из коллекции
+POST {{api}}/social/reviews
+Authorization: {{seller}}
+Content-Type: application/json
+
+{ "releaseId": 1001, "pros": "Глубокий бас, тихий винил", "cons": "Небольшой шум на второй стороне" }
+
+### 7. Изменение своего ревью
+PATCH {{api}}/social/reviews/1
+Authorization: {{seller}}
+Content-Type: application/json
+
+{ "cons": "Шум оказался пылью, после чистки пропал" }
+
+### 8. Снятие лота с продажи (204)
+DELETE {{api}}/marketplace/listings/1
+Authorization: {{seller}}
+
+### 9. Подписчик удаляет релиз из Wantlist (204)
+DELETE {{api}}/collection/wantlist/1
+Authorization: {{subscriber}}

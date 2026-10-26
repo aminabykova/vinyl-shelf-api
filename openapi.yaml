@@ -1,0 +1,680 @@
+openapi: 3.0.3
+info:
+  title: Vinyl Shelf API
+  version: 1.0.0
+  description: |
+    API сервиса для создания цифровой коллекции виниловых пластинок.
+    Схема описывает эндпоинты из user stories 1-4:
+    поиск по штрихкоду и черновик карточки, лоты на маркетплейсе, ревью на релиз, Wantlist.
+    На первом этапе реализация может быть заглушкой (stub), возвращающей примеры из этой схемы.
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Локальный stub-сервер
+tags:
+  - name: catalog
+    description: Каталог релизов (Catalog Service)
+  - name: collection
+    description: Коллекция и Wantlist (Collection Service)
+  - name: marketplace
+    description: Лоты (Marketplace Service)
+  - name: social
+    description: Ревью (Social Service)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /catalog/lookup:
+    get:
+      tags: [catalog]
+      operationId: lookupByBarcode
+      summary: Поиск релизов по штрихкоду
+      description: Один штрихкод может соответствовать нескольким релизам и репрессам, поэтому возвращается список.
+      parameters:
+        - name: barcode
+          in: query
+          required: true
+          description: Штрихкод, 8-14 цифр
+          schema:
+            type: string
+            pattern: '^[0-9]{8,14}$'
+            example: '0602537284332'
+      responses:
+        '200':
+          description: Найден хотя бы один релиз
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseList'
+              example:
+                releases:
+                  - releaseId: 1001
+                    artist: Pink Floyd
+                    title: The Dark Side of the Moon
+                    year: 1973
+                    label: Harvest
+                    country: UK
+                    genres: [Rock]
+                    tracklist: [Speak to Me, Breathe, On the Run]
+                  - releaseId: 1002
+                    artist: Pink Floyd
+                    title: The Dark Side of the Moon
+                    year: 2016
+                    label: Pink Floyd Records
+                    country: EU
+                    genres: [Rock]
+                    tracklist: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Релиз не найден, можно добавить вручную
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: NOT_FOUND
+                message: Релиз не найден. Добавьте пластинку вручную.
+        '503':
+          description: Discogs недоступен и данных в кэше нет
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: EXTERNAL_UNAVAILABLE
+                message: Внешняя база временно недоступна, повторите запрос позже.
+
+  /collection/items:
+    post:
+      tags: [collection]
+      operationId: createCollectionItem
+      summary: Создать черновик карточки в коллекции
+      description: Создаёт CollectionItem в статусе DRAFT по выбранному релизу.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCollectionItemRequest'
+            example:
+              releaseId: 1001
+      responses:
+        '201':
+          description: Черновик создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionItem'
+              example:
+                id: 501
+                releaseId: 1001
+                status: DRAFT
+                mediaCondition: null
+                sleeveCondition: null
+                note: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Релиз с таким releaseId не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: NOT_FOUND
+                message: Релиз не найден.
+
+  /collection/items/{id}:
+    patch:
+      tags: [collection]
+      operationId: updateCollectionItem
+      summary: Дополнить и подтвердить карточку
+      description: Позволяет указать состояние и заметку, а также подтвердить черновик (DRAFT -> IN_COLLECTION).
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCollectionItemRequest'
+            example:
+              mediaCondition: NM
+              sleeveCondition: VG+
+              note: Первый пресс, куплена на блошином рынке
+              confirm: true
+      responses:
+        '200':
+          description: Карточка обновлена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionItem'
+              example:
+                id: 501
+                releaseId: 1001
+                status: IN_COLLECTION
+                mediaCondition: NM
+                sleeveCondition: VG+
+                note: Первый пресс, куплена на блошином рынке
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Подтвердить можно только черновик (DRAFT)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: CONFLICT
+                message: Подтвердить можно только черновик.
+
+  /marketplace/listings:
+    post:
+      tags: [marketplace]
+      operationId: createListing
+      summary: Выставить экземпляр на продажу
+      description: |
+        Переводит экземпляр в статус ON_SALE и создаёт лот.
+        Продать можно только экземпляр в статусе IN_COLLECTION.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateListingRequest'
+            example:
+              collectionItemId: 501
+              price: 4500
+              currency: RUB
+      responses:
+        '201':
+          description: Лот создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Listing'
+              example:
+                id: 9001
+                collectionItemId: 501
+                price: 4500
+                currency: RUB
+                status: ACTIVE
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Экземпляр уже продаётся, продан или отправлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: CONFLICT
+                message: Экземпляр нельзя выставить на продажу в текущем статусе.
+
+  /marketplace/listings/{id}:
+    delete:
+      tags: [marketplace]
+      operationId: cancelListing
+      summary: Снять лот с продажи
+      description: Возможно, пока нет оплаченного заказа. Экземпляр возвращается в статус IN_COLLECTION.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '204':
+          description: Лот снят с продажи
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: По лоту уже есть оплаченный заказ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: CONFLICT
+                message: Лот нельзя снять, заказ уже оплачен.
+
+  /social/reviews:
+    post:
+      tags: [social]
+      operationId: createReview
+      summary: Оставить ревью на релиз
+      description: |
+        Ревью привязывается к релизу (Release). Оставить его можно, только если релиз есть
+        в коллекции пользователя или куплен на маркетплейсе. Один пользователь - одно ревью на релиз.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReviewRequest'
+            example:
+              releaseId: 1001
+              pros: Глубокий бас, тихий винил
+              cons: Небольшой шум на второй стороне
+      responses:
+        '201':
+          description: Ревью создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Review'
+              example:
+                id: 7001
+                releaseId: 1001
+                authorId: 42
+                pros: Глубокий бас, тихий винил
+                cons: Небольшой шум на второй стороне
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Релиза нет в коллекции пользователя и он не покупал его на маркетплейсе
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: FORBIDDEN
+                message: Ревью можно оставить только на релиз из вашей коллекции.
+        '409':
+          description: Ревью на этот релиз уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: CONFLICT
+                message: Вы уже оставили ревью на этот релиз.
+
+  /social/reviews/{id}:
+    patch:
+      tags: [social]
+      operationId: updateReview
+      summary: Изменить своё ревью
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateReviewRequest'
+            example:
+              cons: Шум на второй стороне оказался следом пыли, после чистки пропал
+      responses:
+        '200':
+          description: Ревью обновлено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Review'
+              example:
+                id: 7001
+                releaseId: 1001
+                authorId: 42
+                pros: Глубокий бас, тихий винил
+                cons: Шум на второй стороне оказался следом пыли, после чистки пропал
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /collection/wantlist:
+    post:
+      tags: [collection]
+      operationId: addToWantlist
+      summary: Добавить релиз в Wantlist
+      description: |
+        Подписывает на уведомления о новых лотах этого релиза. При создании лота
+        Collection Service находит совпадения, а Notification Service отправляет Push/Email.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWantlistRequest'
+            example:
+              releaseId: 1002
+              notify: true
+      responses:
+        '201':
+          description: Релиз добавлен в Wantlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WantlistEntry'
+              example:
+                id: 3001
+                releaseId: 1002
+                notify: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Релиз не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: NOT_FOUND
+                message: Релиз не найден.
+        '409':
+          description: Релиз уже есть в Wantlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: CONFLICT
+                message: Релиз уже добавлен в Wantlist.
+
+  /collection/wantlist/{id}:
+    delete:
+      tags: [collection]
+      operationId: removeFromWantlist
+      summary: Удалить релиз из Wantlist
+      description: После удаления уведомления по этому релизу не приходят.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '204':
+          description: Запись удалена
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Токен проверяет API Gateway
+
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      description: Идентификатор ресурса
+      schema:
+        type: integer
+        minimum: 1
+        example: 501
+
+  responses:
+    BadRequest:
+      description: Некорректные параметры или тело запроса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: BAD_REQUEST
+            message: Некорректные данные запроса.
+    Unauthorized:
+      description: Токен отсутствует или недействителен
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: UNAUTHORIZED
+            message: Требуется авторизация.
+    Forbidden:
+      description: Нет прав на этот ресурс
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: FORBIDDEN
+            message: Нет доступа к чужому ресурсу.
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: NOT_FOUND
+            message: Ресурс не найден.
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: BAD_REQUEST
+        message:
+          type: string
+
+    Release:
+      type: object
+      required: [releaseId, artist, title]
+      properties:
+        releaseId:
+          type: integer
+          example: 1001
+        artist:
+          type: string
+        title:
+          type: string
+        year:
+          type: integer
+          nullable: true
+        label:
+          type: string
+          nullable: true
+        country:
+          type: string
+          nullable: true
+        genres:
+          type: array
+          items:
+            type: string
+        tracklist:
+          type: array
+          nullable: true
+          items:
+            type: string
+
+    ReleaseList:
+      type: object
+      required: [releases]
+      properties:
+        releases:
+          type: array
+          items:
+            $ref: '#/components/schemas/Release'
+
+    ItemStatus:
+      type: string
+      description: Статус экземпляра. Меняет только Collection Service.
+      enum: [DRAFT, IN_COLLECTION, ON_SALE, SOLD, SHIPPED]
+
+    Condition:
+      type: string
+      description: Состояние по шкале Goldmine/Discogs
+      enum: [M, NM, VG+, VG, G, F, P]
+
+    CollectionItem:
+      type: object
+      required: [id, releaseId, status]
+      properties:
+        id:
+          type: integer
+        releaseId:
+          type: integer
+        status:
+          $ref: '#/components/schemas/ItemStatus'
+        mediaCondition:
+          allOf:
+            - $ref: '#/components/schemas/Condition'
+          nullable: true
+        sleeveCondition:
+          allOf:
+            - $ref: '#/components/schemas/Condition'
+          nullable: true
+        note:
+          type: string
+          nullable: true
+
+    CreateCollectionItemRequest:
+      type: object
+      required: [releaseId]
+      properties:
+        releaseId:
+          type: integer
+          example: 1001
+
+    UpdateCollectionItemRequest:
+      type: object
+      properties:
+        mediaCondition:
+          $ref: '#/components/schemas/Condition'
+        sleeveCondition:
+          $ref: '#/components/schemas/Condition'
+        note:
+          type: string
+          maxLength: 1000
+        confirm:
+          type: boolean
+          description: true - подтвердить черновик (DRAFT -> IN_COLLECTION)
+
+    Currency:
+      type: string
+      enum: [RUB, USD, EUR]
+
+    Listing:
+      type: object
+      required: [id, collectionItemId, price, currency, status]
+      properties:
+        id:
+          type: integer
+        collectionItemId:
+          type: integer
+        price:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+        currency:
+          $ref: '#/components/schemas/Currency'
+        status:
+          type: string
+          enum: [ACTIVE, CANCELLED, SOLD]
+
+    CreateListingRequest:
+      type: object
+      required: [collectionItemId, price, currency]
+      properties:
+        collectionItemId:
+          type: integer
+          example: 501
+        price:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          example: 4500
+        currency:
+          $ref: '#/components/schemas/Currency'
+
+    Review:
+      type: object
+      required: [id, releaseId, authorId]
+      properties:
+        id:
+          type: integer
+        releaseId:
+          type: integer
+        authorId:
+          type: integer
+        pros:
+          type: string
+          nullable: true
+          maxLength: 3000
+        cons:
+          type: string
+          nullable: true
+          maxLength: 3000
+
+    CreateReviewRequest:
+      type: object
+      required: [releaseId]
+      description: Должно быть заполнено хотя бы одно из полей pros или cons
+      properties:
+        releaseId:
+          type: integer
+        pros:
+          type: string
+          maxLength: 3000
+        cons:
+          type: string
+          maxLength: 3000
+
+    UpdateReviewRequest:
+      type: object
+      properties:
+        pros:
+          type: string
+          maxLength: 3000
+        cons:
+          type: string
+          maxLength: 3000
+
+    WantlistEntry:
+      type: object
+      required: [id, releaseId, notify]
+      properties:
+        id:
+          type: integer
+        releaseId:
+          type: integer
+        notify:
+          type: boolean
+
+    CreateWantlistRequest:
+      type: object
+      required: [releaseId]
+      properties:
+        releaseId:
+          type: integer
+          example: 1002
+        notify:
+          type: boolean
+          default: true
